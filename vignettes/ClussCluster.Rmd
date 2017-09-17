@@ -1,0 +1,256 @@
+---
+title: "ClussCluster"
+author: "Ge Jiang"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{ClussCluster}
+  %\VignetteEngine{knitr::rmarkdown}
+  \usepackage[utf8]{inputenc}
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(width = 90) 
+```
+
+The ClussCluster package implements the sparse clustering algorithm described in "Simultaneous detection of cell types and type-specific signature genes in single-cell transcriptome data". This algorithm performs clustering, detects distinct cell types, and identifies signature genes which are markers of these cell types. This vignette will guide you through the steps necessary to apply the algorithm to your data. A real scRNA-seq data set will be used as an illustration.
+
+The main functions of this ClussCluster package include:
+
+1. Preprocessing single-cell RNA-seq data to facilitate analysis;
+2. Detecting distinct cell types among the cells;
+3. Identifying signature genes of each cell type that are uniquely expressed in the associated cell type;
+4. Visualizing the expression patterns of selected genes using heatmap.
+
+## 1. Load the package
+
+First, we need to install and load the ClussCluster package. For each of the following sections in this vignette, we assume this step has been carried out.
+
+```{r}
+#install.packages('ClussCluster')
+library(ClussCluster)
+```
+
+## 2. Example Data set
+
+For this vignette we will use the scRNA-seq data created by Hou et.al (2016). This data set is also used in the paper. It contains normalized and log-transformed gene expression, log(FPKM+1), measurements for 33 cells and 27,033 genes. 25 single cancer cells are derived from a human hepatocellular carcinoma (HCC) tissue and the other 8 are single human hepatoblastoma-derived (HepG2) cells. Therefore, the 33 cells belong to three populations: HCC-sub I, HCC-sub II, and HepG2. Since those cells were derived from different tissues and have different biological functions, the subset of genes that separate HCC cells from HepG2 cells are unlikely to be the same as those that separate the two HCC subpopulations. We are going to apply the ClussCluster algorithm and identify the three subpopulations and their signature genes, respectively. 
+
+We first view the top of the data set to ensure it is in the correct format. Here the genes are rows and the columns are cells as desired.
+
+```{r}
+data(Hou)
+hou.dat <- Hou$x
+dim(hou.dat)
+hou.dat[1:10, 1:5]
+```
+
+Here Hou is a list containing many slots. The slot 'x' is the expression data set that is normalized and log-transformed but not centered. The slot 'groups' stores the names of the subpopulations and the slot 'y' stores the cluster labels of all cells. In practice, the labels are unlikely to be available and will be estimated by ClussCluster. In Section 5 of this vignette, the labels will be used as a reference to examine the clustering results of ClussCluster.
+
+```{r}
+Hou$groups
+table(Hou$y)
+```
+
+The gene and cell names are also stored:
+
+```{r}
+Hou$gnames[1:20]
+Hou$snames
+```
+
+## 3. Pre-processing the data
+
+Before beginning an analysis using ClussCluster, you will need to carry out a few preprocessing steps. This includes **normalization, log transformation, filtering of genes that are mostly zero, and getting the data into the format** that is expected by the ClussCluster function.
+
+ClussCluster requires that data be normalized for sequencing depth prior to running ClussCluster. It is recommended that users make use of one of the many methods that exist for normalizing scRNA-Seq data. We also recommend that the data is log-transformed. 
+
+With real data, it is advisable to filter the input gene set to remove genes that have an extremely high proportion of zeroes. That means, genes where only one or fewer cells have a nonzero measurement should be filtered out. Because of this, we do not recommend that the data be centered prior to the filtering. Besides zero counts, genes with very low expression mean and variance should also be filtered out. In this section, we demonstrate the utility of the filter_gene function, which can be helpful if working with the log-transformed and normalized expression data. 
+
+Three thresholds can be varied:
+
+1. n0prop: minimum proportion of zeroes. For example, n0prop=0.2 means that genes are filtered out if they are less than 20 percent zero;
+2. minmean: minimum mean of expression. For example, minmean=2 means that genes are filtered out if their mean expression is less than 2;
+3. minsd: minimum standard deviation of expression. For example, minsd=1.5 means that genes are filtered out if the standard deviation of expression is less than 1.5. 
+
+First, load the Hou example data set:
+
+```{r}
+data(Hou)
+hou.dat <- Hou$x
+```
+                    
+Now, apply the filter_gene function, use a threshold of 0.2 on the proportion of zeroes, 0.5 on the mean of expression, and 1.5 on the standard deviation of expression:
+
+```{r}
+run.ft <- filter_gene(hou.dat, minmean=0.5, n0prop=0.2, minsd=1.5)
+dat.ft <- run.ft$dat.ft
+dim(dat.ft)
+```
+
+As we can see, this combination of filters removes around 25000 genes and keeps 2731 genes. 
+
+Here run.ft is a list that contains several slots:
+
+1. dfname: the original data set before filtering;
+2. dat.ft: the data set after filtering;
+3. index: the index of genes that are kept;
+4. minmean, n0prop, minsd: thresholds used in the filtering.
+
+Here we view the top of the filtered data:
+
+```{r}
+dat.ft[1:10, 1:5]
+```
+
+and check if the filtering was succesful by examing the zero proportion, mean, standard deviation of each gene:
+
+```{r}
+summary(apply(dat.ft!=0, 1, mean))
+summary(apply(dat.ft, 1, mean))
+summary(apply(dat.ft, 1, sd))
+```
+
+
+## 4. Determine the tuning parameter
+
+The tuning parameter s is pivotal to the algorithm's performance and needs to be decided beforehand. It controls the level of sparsity of the marker genes for each cluster and the values in the resulting weight matrix. In the literature, a permutation approach that is closely related to the gap statistic is recommended. 
+
+We demonstrate the utility of the ClussCluster_Gap function to generate permutation samples and calculate the gap statistic. A set of candidate tuning parameter needs to be supplied beforehand and the one that maximizes the gap statistic will be selected. See more details in the paper. 
+
+To determine the value of s the following needs to be provided:
+
+1. dat.ft: the expression data, regardless it is filtered or raw data set;
+2. nclust or centers: the number of clusters or the centers of clusters. For the Hou data there are three subpopulations present in the data set and we put nclust = 3;
+3. ws: a set of candidate tuning parameters. Here we choose the set of initial parameters to be 1.3, 2.4, 3.1, 3.8, 4.3, and, 5.4.
+
+Now, apply the ClussCluster_Gap function on the filtered data set dat.ft:
+
+```{r, eval=FALSE, echo=TRUE}
+run.gap <- ClussCluster_Gap(dat.ft, nclust = 3, ws = c(1.3, 2.4, 3.1, 3.8, 4.3, 5.4))
+```
+
+```{r, eval=TRUE, echo=FALSE}
+# To save time, the run.gap object is produced and saved in the same working directory
+load('run_gap.rda')
+```
+
+We can view the results of the gap statistics by applying the print_ClussCluster_Gap function. The number of clusters, average number of genes with non-zero weights across the clusters, gap statistics and their standard deviations are listed:
+
+```{r}
+print_ClussCluster_Gap(run.gap)
+```
+
+As the tuning parameter increases, the average number of signature genes and the value of the gap statistic tend to increase. The one that maximizes the gap statistic is. Alternatively, one can choose a tuning parameter to be the smallest value that is within one standard deviation of the maximal gap statistic. This results in fewer genes with positive weights. In practice, one may use this one-standard-deviation rule to select a smaller number of genes for more interpretable results. 
+
+Once the tuning parameter has been decided, we can go ahead and run the ClussCluster algorithm. For this vignette, we will use the one selected by the one-sd rule:
+
+```{r}
+s <- run.gap$onesd.bestw
+s
+```
+
+
+## 5. Run ClussCluster
+
+The ClussCluster algorithm aims to detect different cell types and identify cell-type-specific signature genes in single-cell RNA sequencing data. 
+
+First, we need to specify the parameter arguments that we’ll pass to the ClussCluster function. Similar to ClussCluster_Gap, we set the data set to be x = dat.ft, the number of clusters nclust = 3 (one can also set the centers of the clusters instead) and the tuning parameters ws = run.gap$onesd.bestw. See ?ClussCluster for how to specify other optional parameters. 
+
+Note: The users can choose any tuning parameter other than run.gap\$onesd.bestw. One can also provide multiple tuning parameters to ClussCluster function.
+
+If the users have run ClussCluster_Gap in the previous step, every candidate tuning parameter was already evaluated by ClussCluster function and the results are stored in run.gap\$run. Therefore, if the tuning parameter to be used in this step is in the set of candidate tuning parameter, say ws = 3.8, one can either run the ClussCluster function or directly extract the results from the ClussCluster_Gap object: 
+
+```{r, message=FALSE}
+i<- match(run.gap$onesd.bestw, c(1.3, 2.4, 3.1, 3.8, 4.3, 5.4))
+run.cc <- run.gap$run[[i]]
+
+run.cc <- ClussCluster(dat.ft, nclust = 3, ws = run.gap$onesd.bestw)
+```
+
+The two sets of commands will produce the same results. 
+
+### Viewing Clustering Results
+
+Here we first check the accuracy of the clustering results by examining the confusion matrix of the estimated cluster labels in run.cc and the true labels in Hou$y:
+
+```{r}
+theta <- run.cc$theta
+table(Hou$y, theta)
+```
+
+Here we see that all 33 cells were clustered to the correct cell subpopulation with the HCC_subpop_1 cells making up cluster 1, the HCC_subpop_2 cells making up cluster 2 and the HepG2 cells making up cluster 3.
+
+Note that the labels can change arbitrarily with different seeds in the clustering process, it is crucial that the users find the one-to-one correspondence between the cluster labels and the cell types. 
+
+We have found in simulation studies that the accuracy of the clustering is closely related to the accuracy of the selected signature genes in the next step. For example, if half of the cells in cluster 1 are HCC_subpop_1 cells but the other half are not, then the signature genes of cluster 1 should not be identified as marker genes of HCC_subpop_1. 
+
+### Cell-type-specific signature genes
+
+We first apply the print_ClussCluster function to the ClussCluster object to print the number of signature genes for each cluster:
+
+```{r}
+print_ClussCluster(run.cc)
+```
+
+The importance of each gene to each cluster is stored in the weight matrix. The matrix is of dimension p x K, where p is the number of genes and K is the number of clusters. The first column of the weight matrix contains the importance of all genes to HCC_subpop_1 cells, the second column to the HCC_subpop_2 cells, and the third column to the HepG2 cells. The unimportant genes are assigned zero weights whereas important genes are given positive weights. 
+
+Here we view the top of the weight matrix: 
+
+```{r}
+wt.mat <- run.cc$w
+head(wt.mat, 10)
+```
+
+To extract the index and the names of the signature genes for each cluster we can run:
+
+```{r}
+sig_index <- apply(wt.mat, 2, function(w) which(w!=0))
+sig_names <- apply(wt.mat, 2, function(w) rownames(dat.ft)[which(w!=0)])
+sig_names
+```
+
+The top 5 signature genes for each cluster can be identified as:
+
+```{r}
+top_5_genes <- apply(wt.mat, 2, function(w) rownames(dat.ft)[order(w, decreasing = T)[1:5]])
+top_5_genes
+```
+
+
+## 6. Plot
+
+Besides the results shown in Sections 4 and 5 in this vignette, this package also provides options to visualize the results of ClussCluster and ClussCluster_Gap. Next we demonstrate the utilities of functions plot_ClussCluster and plot_ClussCluster_Gap to produce four types of plots. The objects we will need are run.gap and run.cc.
+
+With the run.gap object, we apply the plot_ClussCluster_Gap function to plot the gap statistics against the candidate tuning parameters. Their standard deviations are plotted as the vertical bars. It would helpful to users to eyeball the one that maximizes the gap statistic and the one chosen by the one-sd rule:
+
+```{r, fig.width=6,fig.height=4}
+plot_ClussCluster_Gap(run.gap)
+```
+
+With the run.cc object, there are several ways to apply the plot_ClussCluster function. If multiple candidate tuning parameters are evaluated, the number of signature genes of each cluster are plotted against the tuning parameters, with each color and line type corresponding to one cluster:
+
+```{r, fig.width=6,fig.height=4}
+plot_ClussCluster(run.gap$run)
+```
+
+If only one tuning parameter is evaluated, then the user can have a closer look at the results. Two plots will be produced: the venn diagram of the cluster-specific signature genes and the heatmap of the data set with the top m genes from each cluster. The venn diagram shows the overlap of the cluster-specific genes so that we know which genes are important to all clusters and the which genes are uniquely important to one cluster. The heatmap shows the expression patterns of the signature genes, they can be over-expressed, under-expressed, or consistent within a particular cluster. 
+
+For this vignette, the heatmap is plotted based on top 5 genes:
+
+```{r, fig.width=6,fig.height=4}
+plot_ClussCluster(run.cc, m = 5, snames=Hou$snames, gnames=rownames(dat.ft))
+```
+
+
+## 7. References
+
+Hou, Y., Guo, H., Cao, C., Li, X., Hu, B., Zhu, P., Wu, X., Wen, L., Tang, F., Huang, Y., & Peng, J. (2016). Single-cell triple omics sequencing reveals genetic, epigenetic, and transcriptomic heterogeneity in hepatocellular carcinomas. Cell Research, 26(3), 304-319.
+
+## 8. Session Info
+
+```{r, echo=FALSE}
+sessionInfo()
+```
+
+
