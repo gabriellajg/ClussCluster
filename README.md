@@ -1,38 +1,15 @@
+# ClussCluster
+
 This package implements a new method ClussCluster to simultaneously perform clustering analysis and signature gene selection on high-dimensional transcriptome data sets. To do so, ClussCluster incorporates a Lasso-type regularization penalty term to the objective function of K-means so that cell-type-specific signature genes can be identified while clustering the cells.
-
-# Project Title
-
-One Paragraph of project description goes here
-
-## Getting Started
-
-These instructions will get you a copy of the project up and running on your local machine for development and testing purposes. See deployment for notes on how to deploy the project on a live system.
-
-### Prerequisites
-
-What things you need to install the software and how to install them
-
-```
-Give examples
-```
 
 ### Installing
 
-A step by step series of examples that tell you have to get a development env running
-
-Say what the step will be
+First, we need to install and load the ClussCluster package. For each of the following sections in this vignette, we assume this step has been carried out.
 
 ```
-Give the example
+install.packages('ClussCluster')
+library(ClussCluster)
 ```
-
-And repeat
-
-```
-until finished
-```
-
-End with an example of getting some data out of the system or using it for a little demo
 
 ## Running the tests
 
