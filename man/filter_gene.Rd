@@ -26,5 +26,4 @@ If the data has already been centered, one can still apply the filters of \code{
 \examples{
 dat <- matrix(rnbinom(300*60, mu = 2, size = 1), 300, 60)
 dat_filtered <- filter_gene(dat, minmean=2, n0prop=0.2, minsd=1)
-
 }
